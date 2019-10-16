@@ -1,4 +1,7 @@
 import pygame
+import os
+import sys
+import psutil
 # Author: Alex Gomes
 # Date: Oct 13/2019
 # Notes: Just a quick game, no real graphics, just polygons, supports up to 4 players, min 2 players 
@@ -63,25 +66,26 @@ class Player:
     # add this iteration of movement to our player's traversed path and to the grid's traversed path
     # return the updated grid for future collision checks
     def move(self, key_buffer, grid_traversed):
-        if key_buffer[self.keys["UP"]]:
-            if not self.down:
-                self.reset_move()
-                self.up = True
+        if len(self.keys):
+            if key_buffer[self.keys["UP"]]:
+                if not self.down:
+                    self.reset_move()
+                    self.up = True
 
-        elif key_buffer[self.keys["DOWN"]]:
-            if not self.up:
-                self.reset_move()
-                self.down = True
+            elif key_buffer[self.keys["DOWN"]]:
+                if not self.up:
+                    self.reset_move()
+                    self.down = True
 
-        elif key_buffer[self.keys["LEFT"]]:
-            if not self.right:
-                self.reset_move()
-                self.left = True
+            elif key_buffer[self.keys["LEFT"]]:
+                if not self.right:
+                    self.reset_move()
+                    self.left = True
 
-        elif key_buffer[self.keys["RIGHT"]]:
-            if not self.left:
-                self.reset_move()
-                self.right = True
+            elif key_buffer[self.keys["RIGHT"]]:
+                if not self.left:
+                    self.reset_move()
+                    self.right = True
 
         if self.up:
             self.y -= self.v
@@ -108,9 +112,19 @@ class Player:
 
     # basic logic of player death makes it so the trail of the player is recoloured as the same colour as the bg
     # this would be a problem if trails overlapped, but they don't, so no worries
-    def death(self, gfx, bg):
+    # we will also remove the union of the this player's path and the grid from the grid
+    def death(self, gfx, bg, grid_traversed):
         for point in self.traversed:
             pygame.draw.rect(gfx, bg, (point[0], point[1], self.r, self.r))
+            if point in grid_traversed:
+                grid_traversed.remove(point)
+        return grid_traversed
+
+class Computer(Player):
+    def __init__(self, x, y, c, name):
+        super().__init__(self, x, y, c, {}, name)
+
+    # TODO: Will need to think about behaviour and decision-making
 
 # the game object, responsible for the environment and resource management
 # instantiation takes in the width and height of the window
@@ -132,18 +146,71 @@ class Game:
         self.window = pygame.display.set_mode((w, h))
         pygame.display.set_caption("PyTron")
         self.clock = pygame.time.Clock()
-
         self.font = pygame.font.Font('freesansbold.ttf', 32) 
+        self.sandbox = False
+
+        self.default_keys = [{
+            "UP": pygame.K_w,
+            "LEFT": pygame.K_a,
+            "RIGHT": pygame.K_d,
+            "DOWN": pygame.K_s
+        }, {
+            "UP": pygame.K_y,
+            "LEFT": pygame.K_g,
+            "RIGHT": pygame.K_j,
+            "DOWN": pygame.K_h
+        }, {
+            "UP": pygame.K_p,
+            "LEFT": pygame.K_l,
+            "RIGHT": pygame.K_QUOTE,
+            "DOWN": pygame.K_SEMICOLON
+        }, {
+            "UP": pygame.K_UP,
+            "LEFT": pygame.K_LEFT,
+            "RIGHT": pygame.K_RIGHT,
+            "DOWN": pygame.K_DOWN
+        }]
+
+        self.default_colors = {
+            "red": (255, 64, 64),
+            "green": (64, 255, 64),
+            "blue": (64, 64, 255),
+            "yellow": (255, 255, 128)
+        }
 
     # append game object to resources list, a bit redundent but good practice
     def add(self, obj):
         self.resources.append(obj)
 
+    # handling game environment key mapping
+    # currently only handle spacebar to restart the entire process
+    # we will make sure we clean up orphan processes
+    def handle_game_input(self, keys):
+        if keys[pygame.K_SPACE]:
+            try:
+                p = psutil.Process(os.getpid())
+                for handler in p.get_open_files() + p.connections():
+                    os.close(handler.fd)
+            except Exception as e:
+                pass # swallow, because if the process is exits normally, it will throw an error for p
+
+            python = sys.executable
+            os.execl(python, python, f'{sys.argv[0]}')
+
     # create a player if we have room for one, track this player into the players list and add the player's spawn location to the grid traversed
-    def spawn_player(self, x, y, c, keymap, name):
-        if len(self.spawned_players) < 4:
+    # we will assign a default name if name is left empty as "Player n"
+    # we will also have a default keymap, set to empty, as in no controls, but this may throw an uncaught exception on runtime 
+    # we will also allow AI players to spawn from here
+    def spawn_player(self, x, y, c, name="", keymap={}, ai=False):
+        if len(self.spawned_players) < 4 and len(keymap):
+            if not name:
+                name = f'Player {len(self.spawned_players) + 1}'
+            if ai:
+                name += ' (CPU)'
             self.traversed.append((x, y))
             self.spawned_players.append(name)
+            if ai:
+                return Computer(x, y, c, name)
             return Player(x, y, c, keymap, name)
 
     # redraw the background, which will clear everything
@@ -162,20 +229,28 @@ class Game:
         self.reset()
         for resource in self.resources:
             type = resource.__class__.__name__
-            if type == "Player" and len(self.spawned_players) > 1:
+            if type == "Player" and (len(self.spawned_players) > 1 or self.sandbox):
                 if resource.alive:
                     resource.draw(self.window)
                 else:
-                    resource.death(self.window, self.bg)
-                    self.spawned_players.pop(self.spawned_players.index(resource.name))
+                    if resource.name in self.spawned_players:
+                        self.traversed = resource.death(self.window, self.bg, self.traversed)
+                        self.spawned_players.remove(resource.name)
+
+        if self.sandbox:
+            pygame.display.update()
+            return
 
         if len(self.spawned_players) > 1:
             pygame.display.update()
         else:
-            self.reset()
             text = self.font.render(f'{self.spawned_players[0]} wins!', True, (0, 0, 0), (255, 255, 255)) 
             textRect = text.get_rect()
-            textRect.center = (W // 2, H // 2)
+            textRect.center = (W // 2, H // 2 - 50)
+            self.window.blit(text, textRect)
+            text = self.font.render(f'Press Space to restart!', True, (0, 0, 0), (255, 255, 255)) 
+            textRect = text.get_rect()
+            textRect.center = ((W) // 2, H // 2 + 50)
             self.window.blit(text, textRect)
             pygame.display.update()
 
@@ -193,6 +268,8 @@ class Game:
 
         keys = pygame.key.get_pressed()
 
+        self.handle_game_input(keys)
+
         for resource in self.resources:
             type = resource.__class__.__name__
             if type == "Player":
@@ -206,37 +283,34 @@ class Game:
 # Creating the game object
 game = Game(W, H)
 
-# Possible colours for our 4 players
-colors = {
-        "red": (255, 64, 64),
-        "green": (64, 255, 64),
-        "blue": (64, 64, 255),
-        "yellow": (255, 255, 128)
-    }
-
 # Player keymap with arrow keys
-red_player_keys = {
-    "UP": pygame.K_UP,
-    "LEFT": pygame.K_LEFT,
-    "RIGHT": pygame.K_RIGHT,
-    "DOWN": pygame.K_DOWN
-}
 
-# Player kepmap with WASD keys
-blue_player_keys = {
-    "UP": pygame.K_w,
-    "LEFT": pygame.K_a,
-    "RIGHT": pygame.K_d,
-    "DOWN": pygame.K_s
-}
+"""custom_keys = {
+    "UP": pygame.K_i,
+    "LEFT": pygame.K_j,
+    "RIGHT": pygame.K_l,
+    "DOWN": pygame.K_k
+}"""
+
+custom_keys = {}
+
+custom_color = (255, 64, 255)
 
 # spawn the players 
-red_player = game.spawn_player(400, 400, colors['red'], red_player_keys, "Player 1")
-blue_player = game.spawn_player(100, 100, colors['blue'], blue_player_keys, "Player 2")
+red_player = game.spawn_player(400, 400, c=game.default_colors['red'], keymap=game.default_keys[0])
+blue_player = game.spawn_player(100, 100, c=game.default_colors['blue'], keymap=game.default_keys[3])
+magenta = game.spawn_player(200, 200, c=custom_color, name="Mag", keymap=custom_keys)
 
 # add the players as resources to the game environment
 game.add(red_player)
 game.add(blue_player)
+game.add(magenta)
+
+#game.sandbox = True
+
+if len(game.spawned_players) < 2 and not game.sandbox:
+    print(f"Need at least 2 players, or use sandbox mode!")
+    exit(0)
 
 # run the main loop logic of the game
 while game.run():
