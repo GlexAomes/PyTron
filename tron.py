@@ -3,12 +3,13 @@ import os
 import sys
 import psutil
 # Author: Alex Gomes
-# Date: Oct 13/2019
+# Date: Oct 17/2019
 # Notes: Just a quick game, no real graphics, just polygons, supports up to 4 players, min 2 players 
 
-# The dimensions for the window
+# The dimensions for the window will be (W+RADIUS, H+RADIUS)
 W = 500
 H = 500
+RADIUS = 4
 
 # Player objects
 # Instantiation takes x, y, coords of where to spawn the player
@@ -25,7 +26,7 @@ class Player:
         self.y = y
         self.c = c
         self.keys = keymap
-        self.r = 4
+        self.r = RADIUS
         self.v = self.r
         self.alive = True
         self.traversed = [(self.x, self.y)]
@@ -121,10 +122,85 @@ class Player:
         return grid_traversed
 
 class Computer(Player):
-    def __init__(self, x, y, c, name):
-        super().__init__(self, x, y, c, {}, name)
+    difficulties = {
+        'Easy': 2*RADIUS,
+        'Medium': RADIUS,
+        'Hard': RADIUS // 2
+    }
 
-    # TODO: Will need to think about behaviour and decision-making
+    DEBUG = False
+
+    # Computer object, similar logic to Player but movement is automated
+    # The difficulty is inversely proportional to a scalar multiple of the radius of the grid cells, this determines the AI's reaction time
+    def __init__(self, x, y, c, name, difficulty):
+        self.diff_factor = self.difficulties[difficulty]
+        super().__init__(x, y, c, {}, name)
+
+    # The logic of how it needs to move left or right when moving up or down
+    def vertical_avoid(self, potential):
+        self.reset_move()
+        if potential[0] > W // 2:
+            self.left = True
+            if self.DEBUG: print(f"moved left to avoid {potential}")
+        else:
+            self.right = True
+            if self.DEBUG: print(f"moved right to avoid {potential}")
+
+    # The logic of how it needs to move up or down when moving left or right
+    def horizontal_avoid(self, potential):
+        self.reset_move()
+        if potential[1] > H // 2:
+            self.up = True
+            if self.DEBUG: print(f"moved up to avoid {potential}")
+        else:
+            self.down = True
+            if self.DEBUG: print(f"moved down to avoid {potential}")
+
+    # accepting key_buffer just so it can be called like parent class
+    # practically similar to parent except for the input handle will be automated based on logical checks if it thinks it will collide into
+    #   something while moving along the path and the reaction time of avoiding is scaled based on the distance it will predict, the lower
+    #   the more accurate, this is also scaled based on the difficulty factor
+    def move(self, key_buffer, grid_traversed):
+        # collision avoidance logic here
+        if self.up:
+            potential = (self.x, self.y - self.r*self.diff_factor)
+            if self.DEBUG: print(f"UP | PT={potential}")
+            if potential in grid_traversed or potential[1] <= self.r*self.diff_factor:
+                self.vertical_avoid(potential)
+        
+        if self.down:
+            potential = (self.x, self.y + self.r*self.diff_factor)
+            if self.DEBUG: print(f"DOWN | PT={potential}")
+            if potential in grid_traversed or potential[1] >= H - self.r*self.diff_factor:
+                self.vertical_avoid(potential)
+
+        if self.left:
+            potential = (self.x - self.r*self.diff_factor, self.y)
+            if self.DEBUG: print(f"LEFT | PT={potential}")
+            if potential in grid_traversed or potential[0] <= self.r*self.diff_factor:
+                self.horizontal_avoid(potential)
+
+        if self.right:
+            potential = (self.x + self.r*self.diff_factor, self.y)
+            if self.DEBUG: print(f"RIGHT | PT={potential}")
+            if potential in grid_traversed or potential[0] >= W - self.r*self.diff_factor:
+                self.horizontal_avoid(potential)
+
+        # move based on set direction
+        if self.up:
+            self.y -= self.v
+        elif self.down:
+            self.y += self.v
+        elif self.left: 
+            self.x -= self.v
+        elif self.right: 
+            self.x += self.v
+
+        self.check_collision(grid_traversed)
+        self.traversed.append((self.x, self.y))
+        grid_traversed.append((self.x, self.y))
+
+        return grid_traversed
 
 # the game object, responsible for the environment and resource management
 # instantiation takes in the width and height of the window
@@ -148,6 +224,7 @@ class Game:
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font('freesansbold.ttf', 32) 
         self.sandbox = False
+        self.finished = False
 
         self.default_keys = [{
             "UP": pygame.K_w,
@@ -180,6 +257,17 @@ class Game:
 
     # append game object to resources list, a bit redundent but good practice
     def add(self, obj):
+        type = obj.__class__.__name__
+
+        if type == 'Player' or type == 'Computer':
+            if len(self.spawned_players) < 4:
+                if not obj.name:
+                    obj.name = f'Player {len(self.spawned_players) + 1}'
+                if type == 'Computer':
+                    obj.name += ' (CPU)'
+                self.traversed.append((obj.x, obj.y))
+                self.spawned_players.append(obj.name)
+
         self.resources.append(obj)
 
     # handling game environment key mapping
@@ -201,23 +289,22 @@ class Game:
     # we will assign a default name if name is left empty as "Player n"
     # we will also have a default keymap, set to empty, as in no controls, but this may throw an uncaught exception on runtime 
     # we will also allow AI players to spawn from here
-    def spawn_player(self, x, y, c, name="", keymap={}, ai=False):
-        if len(self.spawned_players) < 4 and len(keymap):
+    def spawn_player(self, x, y, c, name="", keymap={}, ai=False, difficulty='Easy'):
+        """ if len(self.spawned_players) < 4:
             if not name:
                 name = f'Player {len(self.spawned_players) + 1}'
             if ai:
-                name += ' (CPU)'
-            self.traversed.append((x, y))
-            self.spawned_players.append(name)
-            if ai:
-                return Computer(x, y, c, name)
+                name += ' (CPU)' """
+        if ai:
+            return Computer(x, y, c, name, difficulty)
+        if len(keymap):
             return Player(x, y, c, keymap, name)
 
     # redraw the background, which will clear everything
     # also draw the borders of the window
     def reset(self):
         self.window.fill((self.bg))
-        pygame.draw.rect(self.window, (255, 255, 255), (0, 0, W, H), 2)
+        pygame.draw.rect(self.window, (255, 255, 255), (0, 0, W+RADIUS, H+RADIUS), RADIUS)
 
     # update the window after all calculations
     # responsible for calling the update and draw for all resources in the game environment
@@ -229,13 +316,14 @@ class Game:
         self.reset()
         for resource in self.resources:
             type = resource.__class__.__name__
-            if type == "Player" and (len(self.spawned_players) > 1 or self.sandbox):
+            if (type == "Player" or type == "Computer") and (len(self.spawned_players) > 1 or self.sandbox):
                 if resource.alive:
                     resource.draw(self.window)
                 else:
                     if resource.name in self.spawned_players:
                         self.traversed = resource.death(self.window, self.bg, self.traversed)
                         self.spawned_players.remove(resource.name)
+                        print(f"{resource.name} has died!")
 
         if self.sandbox:
             pygame.display.update()
@@ -244,7 +332,10 @@ class Game:
         if len(self.spawned_players) > 1:
             pygame.display.update()
         else:
-            text = self.font.render(f'{self.spawned_players[0]} wins!', True, (0, 0, 0), (255, 255, 255)) 
+            text = self.font.render(f'{self.spawned_players[0]} wins!', True, (0, 0, 0), (255, 255, 255))
+            if not self.finished:
+                print(f"{resource.name} won the game!")
+                self.finished = True
             textRect = text.get_rect()
             textRect.center = (W // 2, H // 2 - 50)
             self.window.blit(text, textRect)
@@ -272,7 +363,7 @@ class Game:
 
         for resource in self.resources:
             type = resource.__class__.__name__
-            if type == "Player":
+            if (type == "Player" or type == "Computer") and (len(self.spawned_players) > 1 or self.sandbox):
                 if resource.alive:
                     resource.move(keys, self.traversed)
 
@@ -281,7 +372,7 @@ class Game:
 # MAIN LOGIC AND SETUP
 
 # Creating the game object
-game = Game(W, H)
+game = Game(W+RADIUS, H+RADIUS)
 
 # Player keymap with arrow keys
 
@@ -298,15 +389,21 @@ custom_color = (255, 64, 255)
 
 # spawn the players 
 red_player = game.spawn_player(400, 400, c=game.default_colors['red'], keymap=game.default_keys[0])
-blue_player = game.spawn_player(100, 100, c=game.default_colors['blue'], keymap=game.default_keys[3])
-magenta = game.spawn_player(200, 200, c=custom_color, name="Mag", keymap=custom_keys)
+#blue_player = game.spawn_player(100, 100, c=game.default_colors['blue'], keymap=game.default_keys[3])
+#magenta = game.spawn_player(200, 200, c=custom_color, name="Mag", keymap=custom_keys)
 
 # add the players as resources to the game environment
 game.add(red_player)
-game.add(blue_player)
-game.add(magenta)
+#game.add(blue_player)
+#game.add(magenta)
 
-#game.sandbox = True
+# AI
+cpu = game.spawn_player(100, 100, c=(171, 235, 52), ai=True, difficulty='Hard')
+#cpu2 = game.spawn_player(400, 400, c=(52, 235, 171), ai=True, difficulty='Hard')
+game.add(cpu)
+#game.add(cpu2)
+
+game.sandbox = False
 
 if len(game.spawned_players) < 2 and not game.sandbox:
     print(f"Need at least 2 players, or use sandbox mode!")
@@ -315,3 +412,5 @@ if len(game.spawned_players) < 2 and not game.sandbox:
 # run the main loop logic of the game
 while game.run():
     game.update()
+
+# TODO: The AI is very tacky, if you start the game with 2 CPU players, they will be symmetric. In other words, there is no entropy to the AI.
